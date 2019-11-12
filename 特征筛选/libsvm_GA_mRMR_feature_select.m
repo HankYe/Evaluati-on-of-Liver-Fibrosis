@@ -1,0 +1,155 @@
+% PRO test for genetic algorithm optimization
+% Fitness函数结合准确性及排序值
+
+% % feature categorized
+
+function [output,time,value,ind,n_fea,g_sel,C_sel,temp,fea_sel] = libsvm_GA_mRMR_feature_select(feature_input, label_target, Nind, Maxgen, Preci_add, Rxov, Rmut, GGAP, gen, K_fold) %CV时用这个
+% function [g_sel,C_sel] = libsvm_GA_mRMR_feature_select(feature_input,label_target, Nind, Maxgen, Preci_add, Rxov, Rmut, GGAP, gen, K_fold) %LOOCV时用这个
+label_target=label_target';
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+ X = [feature_input']';
+% X = [Breast138_morph11_auto_new' ; PC_LBPV138_8ori_6scale_r2p16']';
+
+[no,dim] = size(X);
+
+% Feature normalization [-1,1]
+for i=1:dim
+    % X_norm 138*155
+    X_norm(:,i)=((X(:,i)-min(X(:,i)))/(max(X(:,i))-min(X(:,i))))*2-1;
+end
+
+% mRMR ranking
+for n = 1:dim
+x = X(:,n);
+x_max = floor(max(x)); x_min = floor(min(x));
+delta = (x_max-x_min)/5;
+
+
+for i = 1:no
+    if x(i)>=x_min && x(i)<(x_min+delta)
+        x_cat(i,n) = 0;
+    elseif x(i)>=(x_min+delta) && x(i)<(x_min+2*delta)
+        x_cat(i,n) = 1;
+    elseif x(i)>=(x_min+2*delta) && x(i)<(x_min+3*delta)
+        x_cat(i,n) = 2;
+    elseif x(i)>=(x_min+3*delta) && x(i)<(x_min+4*delta)
+        x_cat(i,n) = 3;
+    else x_cat(i,n) = 4;
+    end
+end
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+d = x_cat; % categorized input feature matrix, m*m
+f = label_target; % feature target vector, m*1
+K = dim; % number of selected features
+
+% mRMR stage, [fea] is the index set of the first K selected features
+[fea] = mrmr_mid_d(d, f, K);
+
+% fea_rank表示特征的mRMR顺序，即fea_rank(1)即表示第一个特征的mRMR位置
+fea_rank = zeros(1,K);
+for i = 1:K
+fea_rank(fea(i)) = i;
+end
+
+% GA optimization
+Nind = Nind; %种群规模/个体数目
+Maxgen = Maxgen; %遗传代数
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+Preci = dim+Preci_add; % 变量的二进制位数，91fea+12sigma+12C
+% Preci = dim+24; % 变量的二进制位数，155fea+12sigma
+Rxov = Rxov; % 交叉概率
+Rmut = Rmut;% 变异概率
+GGAP = GGAP; % generation gap
+gen = gen;
+% Nind = 50; %种群规模/个体数目
+% Maxgen = 30; %遗传代数
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Preci = dim+Preci_add; % 变量的二进制位数，91fea+12sigma+12C
+% % Preci = dim+24; % 变量的二进制位数，155fea+12sigma
+% Rxov = 0.9; % 交叉概率
+% Rmut = 0.1;% 变异概率
+% GGAP = 1; % generation gap
+% gen = 0;
+% 生成初始种群
+BaseV = crtbase(Preci,2);
+[Chrom,Lind,BaseV] = crtbp(Nind,BaseV);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% % 计算SVM中gamma及C的实数值，在Chrom中的后44个bin分别用于表示gamma和C
+FieldD_g = [Preci_add/2;0.001;1;0;0;1;1]; % gamma:0.001-1
+FieldD_C = [Preci_add/2;1;3000;0;0;1;1]; % C: 1-30,000
+% % 计算SVM中gamma及C的实数值，在Chrom中的后24个bin分别用于表示gamma和C
+% FieldD_g = [12;0.001;1;0;0;1;1]; % gamma:0.001-1
+% FieldD_C = [12;1;3000;0;0;1;1]; % C: 1-3,000
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 初始种群中的sigma值
+g_value = bs2rv(Chrom(:,Preci-(Preci_add-1):Preci-Preci_add/2),FieldD_g);
+C_value = bs2rv(Chrom(:,Preci-(Preci_add/2-1):end),FieldD_C);
+% % 初始种群中的sigma值
+% g_value = bs2rv(Chrom(:,Preci-23:Preci-12),FieldD_g);
+% C_value = bs2rv(Chrom(:,Preci-11:end),FieldD_C);
+
+
+
+% 使用k-fold cross validation计算分类的accuracy作为GA的fitness function
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+T = label_target;
+% T = T138;
+K_fold = K_fold;
+
+% 初始种群的Fitnesss function calculation
+[FitV ObjV RankV] = Fitness_function_pro_libsvm( Nind, Chrom, X_norm, dim, T , K_fold, g_value, C_value, fea_rank );
+tic
+while gen < Maxgen
+
+    % Selection
+    SelCh = select('sus', Chrom, FitV, GGAP);
+    
+    % Crossover / Recombination
+    SelCh = recombin('xovdp', SelCh, Rxov);
+    
+    % Mutation
+    SelCh = mut(SelCh,Rmut);
+    
+    % Evaluation of offspring
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    g_value_SelCh = bs2rv(SelCh(:,Preci-(Preci_add-1):Preci-Preci_add/2),FieldD_g);
+    C_value_SelCh = bs2rv(SelCh(:,Preci-(Preci_add/2-1):end),FieldD_C);
+%     g_value_SelCh = bs2rv(SelCh(:,Preci-23:Preci-12),FieldD_g);
+%     C_value_SelCh = bs2rv(SelCh(:,Preci-11:end),FieldD_C);
+   [FitVSel ObjVSel RankVSel] = Fitness_function_pro_libsvm( Nind*GGAP, SelCh, X_norm, dim, T, K_fold, g_value_SelCh , C_value_SelCh, fea_rank );
+    
+    % Reinsert offspring into population
+    [Chrom FitV ObjV] = reins_my(Chrom,SelCh,1,1,FitV,FitVSel,ObjV,ObjVSel);
+    
+    % 遗传代数加1
+    gen = gen+1;
+    
+end
+time = toc
+
+[value ind] = max(ObjV)
+temp = Chrom(ind,1:dim);
+n_fea = sum(temp)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+g_bin = Chrom(ind,dim+1:dim+Preci_add/2);
+C_bin = Chrom(ind,dim+Preci_add/2+1:end);
+% g_bin = Chrom(ind,dim+1:dim+12);
+% C_bin = Chrom(ind,dim+13:end);
+g_sel = bs2rv(g_bin,FieldD_g)
+C_sel = bs2rv(C_bin,FieldD_C)
+
+fea_sel = find(temp==1);%%%选出特征的序号位置
+temp;
+input=feature_input;
+ii=1;
+for i=1:dim
+    if (temp(i)==1)
+        output(1:no,ii)=input(1:no,i);
+        ii=ii+1;    
+    else
+    end
+end
